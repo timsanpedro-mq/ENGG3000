@@ -1,0 +1,221 @@
+// controller.c
+
+
+// include the interface to the simulator or low-level code
+#include "racer.h"
+
+// Use the stdint definitions of types so you know exactly how many bits of precision you have
+// This will be important as the defaults for types like "int" will be different on the
+// PC to the microcontroller
+#include <stdint.h> 
+
+
+
+#define CLKS_PER_REV  360L      // encoder counts per output shaft revolution (use long to prvent overflow)
+#define DIST_PER_REV  126L      // 0.12566 m * 1000 (based on 20mm wheel radius) 
+#define ANGLE_PER_REV 3950     // Dodgy constant hand tuned in simulator
+#define PI            3142     // 3.14159 * 1000
+#define DT            5        // 0.005 * 1000 (5ms step tick)
+
+#define LENGTH_MM       300L
+#define LENGTH          (LENGTH_MM * CLKS_PER_REV) / DIST_PER_REV // Encoder clicks to travel LENGTH_MM
+#define LENGTH_ON_2     LENGTH >> 1 // Shifting a binary number to the right is the same as dividing by 2
+
+#define ANGLE_RADS      3142L
+#define ANGLE          (ANGLE_RADS * CLKS_PER_REV) / ANGLE_PER_REV // Encoder clicks to rotate PI radians (180 degrees)
+#define ANGLE_ON_2     ANGLE >> 1 // Shifting a binary number to the right is the same as dividing by 2
+
+#define WAIT_TIME   50 // Number of cycles to wait
+
+#define STRAIGHT    1   // These are the states
+#define TURN        2
+#define WAIT        3
+
+
+//wheel speed targets
+//#define V_SET 10 //base foward speed per wheel
+#define STEER_GAIN 1 //pi adjust wheel target (if unable to make tight turns make this biggger)
+
+//straigh control var
+#define KTRP_NUM        42 // 40
+#define KTRI_NUM           2
+#define TR_SHIFT            4
+#define TR_INTEG_MAX      200
+#define TR_EFFORT_MAX      80
+
+//turn control var
+#define KROTP_NUM         24
+#define KROTI_NUM          3
+#define ROT_SHIFT           4
+#define ROT_INTEG_MAX     200
+#define ROT_EFFORT_MAX     60
+
+ //cross bar detection
+ #define CB_threshold   5
+ #define min_ticks 40
+
+ //speed due to track
+ #define num_seg 15 //number of segments
+ static const int16_t segment_speed[num_seg] = {
+    15,  //400mm straight
+    10,  //R100
+    10,  //R100
+    15,  //500mm straigh
+    13, //R200
+    15, //250mm straight
+    13, //R200
+    18, //1150mm straight
+    14, //R150
+    12,  //R150
+    14, //300mm straight
+    12, //R150
+    10, //R100
+    12, //R150
+    15 //400mm straigh
+};
+
+//static const int16_t segment_speed[num_seg] = {7,7,7,7,7,7,7,7,7,7,7,7,7,7,7}; //delete after PI tuned and uncoment above
+
+//PI controller
+static int16_t integ =0; //integrator
+static int16_t i_straight=0; //the straight loop integrator
+static int16_t i_turn =0; //rotation and turn loop integrator
+static int16_t last_line_err =0;
+
+static int16_t last_err =0; //last error
+
+//sensor position weight
+static const int8_t sensor_weight[8] = {-7, -5, -3, -1, 1, 3, 5, 7};
+
+//crossbar stage
+static uint8_t  index = 0;
+static uint8_t  crossbar_passed    = 0;
+static uint16_t crossbar_ticks_passed = 0;
+
+//check if on crossbar
+static uint8_t checkCrossbar(uint8_t sensorvalue) {
+    uint8_t count = 0;
+    while (sensorvalue) {
+        count += sensorvalue & 1;
+        sensorvalue >>= 1;
+    }
+    return count;
+}
+
+
+ /*
+ //averages the sensor weights
+static int16_t read_line_err(uint8_t sensors){
+int16_t error=0;
+uint8_t on=0;
+for (uint8_t i = 0; i < 8; i++) {
+        if (sensors & (1 << i)) {
+            error += sensor_weight[i]; //adjust the error depending on sensor
+            on = 1; //show there is an error
+        }
+    }
+    if (!on) {
+        return last_err; //error remains same 
+    }
+    return error;
+}
+  */
+
+  //sum sensor weights
+    static int16_t read_line_err(uint8_t sensors){
+    int16_t error = 0;
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < 8; i++){
+        if (sensors & (1 << i)){
+            error += sensor_weight[i];
+            count++;
+        }
+    }
+
+    if (count == 0){
+return last_err;
+    }
+
+    error /= count;
+
+    last_err = error;
+
+    return error;
+}
+
+
+
+// This is called when the racer starts up
+void racer_init(void) {
+    i_straight =0;
+    i_turn =0;
+    last_err =0;
+    index =0;
+    crossbar_passed =0;
+    crossbar_ticks_passed =0;
+}
+
+// This is the heart of your racer controller. It is called every 5ms (or whatever you set your timer to be)
+// so it needs to run fast on the real robot. Don't put float calculations in here or too much 32 bit math
+// involving multiplies and divides. If this takes more than 3ms to run your robot will become erratic.
+
+void racer_control_step(void) {
+
+//read sensors 
+      int16_t lenc = read_left_enc();
+    int16_t renc = read_right_enc();
+    uint8_t sensors = read_sensors();
+
+//crossbar detect
+crossbar_ticks_passed++;
+ uint8_t on_crossbar = (checkCrossbar(sensors) >= CB_threshold);
+    if (on_crossbar && !crossbar_passed && crossbar_ticks_passed > min_ticks) {
+        index = (index + 1) % num_seg;
+        crossbar_ticks_passed = 0;
+    }
+    crossbar_passed = on_crossbar;
+ 
+    int16_t V_SET = segment_speed[index];
+
+
+    //line sensors set wheels target speed
+    int16_t line_err = read_line_err(sensors);
+    last_line_err = line_err;
+ 
+    int16_t wL_set = V_SET + STEER_GAIN * line_err;
+    int16_t wR_set = V_SET - STEER_GAIN * line_err;
+
+    //speed wheel error from encoder
+    int16_t errorL = wL_set - lenc;
+    int16_t errorR = wR_set - renc;
+
+    //cal error
+      int16_t straight_error = errorL + errorR;
+    int16_t turn_error   = errorL - errorR;
+
+    //straight PI controil
+     i_straight += straight_error;
+
+    if (i_straight > TR_INTEG_MAX)  i_straight = TR_INTEG_MAX;
+    if (i_straight < -TR_INTEG_MAX) i_straight = -TR_INTEG_MAX;
+ 
+    int16_t trans_out = (KTRP_NUM * straight_error + KTRI_NUM * i_straight) >> TR_SHIFT;
+    if (trans_out > TR_EFFORT_MAX) trans_out = TR_EFFORT_MAX;
+    if (trans_out < 0) trans_out = 0;  
+  
+   //turn PI contol
+    i_turn += turn_error;
+    if (i_turn > ROT_INTEG_MAX)  i_turn = ROT_INTEG_MAX;
+    if (i_turn < -ROT_INTEG_MAX) i_turn = -ROT_INTEG_MAX;
+ 
+    int16_t rot_out = (KROTP_NUM * turn_error + KROTI_NUM * i_turn) >> ROT_SHIFT;
+    if (rot_out > ROT_EFFORT_MAX)  rot_out = ROT_EFFORT_MAX;
+    if (rot_out < -ROT_EFFORT_MAX) rot_out = -ROT_EFFORT_MAX;
+
+    //motor indtuction
+      int16_t lw_pwm = trans_out + rot_out;
+    int16_t rw_pwm = trans_out - rot_out;
+ 
+    set_speeds(lw_pwm, rw_pwm);
+}
+    
