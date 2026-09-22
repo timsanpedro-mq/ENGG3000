@@ -40,21 +40,21 @@
 #define CB_THRESHOLD 5
 
 // Min delay between crossbar detections
-// 40 ticks × 5 ms = 200 ms
+// 40 ticks Ã— 5 ms = 200 ms
 #define MIN_CROSSBAR_TICKS 40
 
 // Maximum difference between left and right encoder increments
 #define STRAIGHT_ENC_TOL 2
 
 // Min time to detect a straight
-// 40 ticks × 5 ms = 200 ms
+// 40 ticks Ã— 5 ms = 200 ms
 #define STRAIGHT_CONFIRM_TICKS 40
 
 // Stops a stationary racer being classified as straight
 #define MIN_FORWARD_COUNTS 2
 
 // Min time for turn state to transition back into a straight state
-// 40 ticks × 5 ms = 200 ms
+// 40 ticks Ã— 5 ms = 200 ms
 #define MIN_TURN_TICKS 40
 
 // Racer States
@@ -131,11 +131,9 @@ static uint8_t detect_straight(int16_t lenc, int16_t renc) {
     int16_t left_counts = abs16(lenc);
     int16_t right_counts = abs16(renc);
 
-    int16_t forward_counts =
-        (left_counts + right_counts) / 2;
+    int16_t forward_counts = (left_counts + right_counts) / 2; //the straight speed so speed for straights!
 
-    int16_t encoder_difference =
-        abs16(left_counts - right_counts);
+    int16_t encoder_difference = abs16(left_counts - right_counts); // the speed for the turns
 
     if ((forward_counts >= MIN_FORWARD_COUNTS) &&
         (encoder_difference <= STRAIGHT_ENC_TOL)) {
