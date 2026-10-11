@@ -236,11 +236,11 @@ void racer_control_step(void)
     int8_t left_ticks = read_left_enc();
     int8_t right_ticks = read_right_enc();
 
-    // 2. Calculate the exact speed 
+    // Calculate the exact speed 
     left_speed_mms  = (int16_t)(((int32_t)left_ticks  * SPEED_SCALE_FACTOR) / 1000);
     right_speed_mms = (int16_t)(((int32_t)right_ticks * SPEED_SCALE_FACTOR) / 1000);
 
-    // 3. Print out your results safely via UART
+    // Print to Serial
     printf("L: %d mm/s | R: %d mm/s\n", left_speed_mms, right_speed_mms);
     
     
